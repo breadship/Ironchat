@@ -15,6 +15,7 @@
         h1 { font-size: 1.5rem; color: #00d9ff; margin-bottom: 5px; }
         .status { color: #888; font-size: 0.8rem; }
         .status.online { color: #00ff88; }
+        .status.connecting { color: #ffa500; }
         .channels { display: flex; gap: 8px; margin-bottom: 15px; flex-wrap: wrap; justify-content: center; flex-shrink: 0; }
         .channel { padding: 8px 14px; border-radius: 20px; background: rgba(255,255,255,0.1); font-size: 0.8rem; cursor: pointer; border: 1px solid transparent; }
         .channel.active { background: #00d9ff; color: #1a1a2e; border-color: #00d9ff; }
@@ -30,13 +31,18 @@
         input[type="text"] { flex: 1; padding: 14px 18px; border: none; border-radius: 25px; background: rgba(255,255,255,0.1); color: #fff; font-size: 1rem; font-family: inherit; }
         input[type="text"]:focus { outline: 2px solid #00d9ff; }
         button { padding: 14px 24px; border: none; border-radius: 25px; background: linear-gradient(135deg, #00d9ff, #00ff88); color: #1a1a2e; font-weight: 700; cursor: pointer; font-size: 0.95rem; }
+        .settings { margin-top: 15px; padding: 15px; background: rgba(255,255,255,0.05); border-radius: 12px; flex-shrink: 0; }
+        .settings h3 { margin-bottom: 12px; color: #00d9ff; font-size: 1rem; }
+        .settings input { width: 100%; padding: 10px 14px; margin-bottom: 10px; border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; background: rgba(255,255,255,0.05); color: #fff; font-size: 0.9rem; }
+        .settings button { width: 100%; margin-top: 5px; }
+        .connection-info { font-size: 0.75rem; color: #888; margin-top: 10px; }
     </style>
 </head>
 <body>
     <div class="container">
         <header>
             <h1>⚡ IronChat</h1>
-            <div class="status online">● Connected - Brett's Chat</div>
+            <div class="status online" id="status">● Connected - Real-time Sync</div>
         </header>
         <div class="channels">
             <div class="channel active" data-channel="general"># general</div>
@@ -44,27 +50,190 @@
             <div class="channel" data-channel="family">👨‍👩‍👧‍👦 family</div>
             <div class="channel" data-channel="ideas">💡 ideas</div>
         </div>
-        <div class="chat-box" id="chatBox">
-            <div class="message assistant">
-                <div class="sender">Assistant</div>
-                <div class="content">Hey Brett! Welcome to IronChat. What do you want to work on today?</div>
-                <div class="time">Just now</div>
-            </div>
-        </div>
+        <div class="chat-box" id="chatBox"></div>
         <div class="input-area">
             <input type="text" id="messageInput" placeholder="Type a message..." autocomplete="off">
             <button id="sendBtn">Send</button>
         </div>
+        <div class="settings">
+            <h3>🔐 Connection Settings</h3>
+            <input type="text" id="username" placeholder="Your name (Brett or Assistant)" value="Brett">
+            <input type="text" id="channelKey" placeholder="Channel Key (shared secret)" value="ironchat-brett-assistant-2025">
+            <button onclick="connectToChannel()">Connect & Sync</button>
+            <div class="connection-info" id="connectionInfo">Waiting for connection...</div>
+        </div>
     </div>
+
+    <script src="https://cdn.ably.com/runtime/1.2/ably.min.js"></script>
     <script>
-        document.getElementById('sendBtn').addEventListener('click', sendMessage);
-        document.getElementById('messageInput').addEventListener('keypress', (e) => { if(e.key === 'Enter') sendMessage(); });
-        document.querySelectorAll('.channel').forEach(channel => {
-            channel.addEventListener('click', (e) => {
-                document.querySelectorAll('.channel').forEach(c => c.classList.remove('active'));
-                e.target.classList.add('active');
+        let ably = null;
+        let channel = null;
+        let currentChannel = 'general';
+        let username = 'Brett';
+
+        function init() {
+            document.getElementById('sendBtn').addEventListener('click', sendMessage);
+            document.getElementById('messageInput').addEventListener('keypress', (e) => { 
+                if(e.key === 'Enter') sendMessage(); 
             });
-        });
+            
+            document.querySelectorAll('.channel').forEach(el => {
+                el.addEventListener('click', (e) => {
+                    document.querySelectorAll('.channel').forEach(c => c.classList.remove('active'));
+                    e.target.classList.add('active');
+                    switchChannel(e.target.dataset.channel);
+                });
+            });
+
+            loadMessages();
+            connectToChannel();
+        }
+
+        function connectToChannel() {
+            const key = document.getElementById('channelKey').value.trim();
+            username = document.getElementById('username').value.trim() || 'Brett';
+            
+            if(!key) {
+                alert('Please enter a channel key');
+                return;
+            }
+
+            document.getElementById('status').className = 'status connecting';
+            document.getElementById('status').textContent = '● Connecting...';
+
+            try {
+                ably = new Ably.Realtime({ key: key, autoConnect: true });
+
+                ably.connection.on('connected', () => {
+                    document.getElementById('status').className = 'status online';
+                    document.getElementById('status').textContent = '● Connected - Real-time Sync';
+                    document.getElementById('connectionInfo').textContent = `Connected as ${username} | Channel: ${currentChannel}`;
+                    
+                    channel = ably.channels.get('ironchat-' + currentChannel);
+                    channel.subscribe((message) => {
+                        if(message.data.username !== username) {
+                            addMessage(message.data.username, message.data.content, message.data.timestamp, message.data.username === 'Brett' ? 'brett' : 'assistant');
+                            saveMessage(message.data);
+                        }
+                    });
+                });
+
+                ably.connection.on('failed', (err) => {
+                    document.getElementById('status').className = 'status';
+                    document.getElementById('status').textContent = '● Connection Failed';
+                    document.getElementById('connectionInfo').textContent = 'Error: ' + err.reason;
+                });
+            } catch(e) {
+                console.error('Connection error:', e);
+                alert('Connection error: ' + e.message);
+            }
+        }
+
+        function switchChannel(newChannel) {
+            currentChannel = newChannel;
+            
+            if(channel) {
+                channel.unsubscribe();
+            }
+
+            if(ably) {
+                channel = ably.channels.get('ironchat-' + newChannel);
+                channel.subscribe((message) => {
+                    if(message.data.username !== username) {
+                        addMessage(message.data.username, message.data.content, message.data.timestamp, message.data.username === 'Brett' ? 'brett' : 'assistant');
+                        saveMessage(message.data);
+                    }
+                });
+            }
+
+            document.getElementById('chatBox').innerHTML = '';
+            loadMessagesForChannel(newChannel);
+
+            document.getElementById('connectionInfo').textContent = `Connected as ${username} | Channel: ${newChannel}`;
+        }
+
+        function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const content = input.value.trim();
+            if(!content) return;
+
+            const message = {
+                username: username,
+                content: content,
+                channel: currentChannel,
+                timestamp: new Date().toISOString()
+            };
+
+            if(channel) {
+                channel.publish('message', message);
+            }
+
+            addMessage(username, content, message.timestamp, username === 'Brett' ? 'brett' : 'assistant');
+            saveMessage(message);
+
+            input.value = '';
+        }
+
+        function addMessage(sender, content, timestamp, who) {
+            const chatBox = document.getElementById('chatBox');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${who}`;
+            
+            const time = new Date(timestamp).toLocaleTimeString([], { 
+                hour: '2-digit', 
+                minute: '2-digit' 
+            });
+
+            messageDiv.innerHTML = `
+                <div class="sender">${sender}</div>
+                <div class="content">${escapeHtml(content)}</div>
+                <div class="time">${time}</div>
+            `;
+            
+            chatBox.appendChild(messageDiv);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        function saveMessage(message) {
+            const key = `ironchat-${message.channel}-${message.username}`;
+            const messages = JSON.parse(localStorage.getItem(key) || '[]');
+            messages.push(message);
+            localStorage.setItem(key, JSON.stringify(messages));
+        }
+
+        function loadMessages() {
+            const key = `ironchat-${currentChannel}-${username}`;
+            const messages = JSON.parse(localStorage.getItem(key) || '[]');
+            messages.forEach(msg => {
+                addMessage(msg.username, msg.content, msg.timestamp, msg.username === 'Brett' ? 'brett' : 'assistant');
+            });
+        }
+
+        function loadMessagesForChannel(ch) {
+            const key = `ironchat-${ch}-`;
+            for(let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                if(k && k.startsWith(key)) {
+                    const messages = JSON.parse(localStorage.getItem(k));
+                    messages.forEach(msg => {
+                        if(msg.channel === ch) {
+                            addMessage(msg.username, msg.content, msg.timestamp, msg.username === 'Brett' ? 'brett' : 'assistant');
+                        }
+                    });
+                }
+            }
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        init();
+    </script>
+</body>
+</html>        });
         function sendMessage() {
             const input = document.getElementById('messageInput');
             const content = input.value.trim();
